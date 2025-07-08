@@ -219,28 +219,7 @@ def compute_routes(addresses: list[str],
 
     console.print('[bold]Resolviendo VRP…[/]')
     idx_routes = solve_vrp(dist, trucks, balance, span, len(stops), dummy)
-    print(idx_routes)
-    
     routes = [[addresses[i] for i in route] for route in idx_routes]
-    print(routes)
-    return routes
-
-    tbl = Table(show_header=True, header_style='bold cyan')
-    tbl.add_column('Camión'); tbl.add_column('Ruta')
-    for i, r in enumerate(routes, 1):
-        tbl.add_row(str(i), ' → '.join(locs[idx].address for idx in r))
-    console.print(tbl)
-
-    if json_out:
-        fname = f"routes_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        Path(fname).write_text(json.dumps({
-            'depot': depot_loc.address,
-            'routes': [
-                {'vehicle': i + 1, 'sequence': [locs[idx].address for idx in seq]} for i, seq in enumerate(routes)
-            ]
-        }, ensure_ascii=False, indent=2), encoding='utf-8')
-        console.print(f'[green]Guardado {fname}')
-
     return routes
 
 
