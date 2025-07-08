@@ -209,7 +209,14 @@ def compute_routes(addresses: list[str],
 
     console.print(f'[bold]Geocodificando {len(addresses) + 1} direcciones…[/]')
     depot_loc = resolve(depot)
-    stops = [loc for addr in addresses if (loc := resolve(addr))]
+    valid_addrs = []
+    stops = []
+    for addr in addresses:
+        loc = resolve(addr)
+        if loc:
+            valid_addrs.append(addr)
+            stops.append(loc)
+
     if not depot_loc or not stops:
         console.print('[red]Geocodificación insuficiente.'); sys.exit(1)
 
@@ -219,7 +226,7 @@ def compute_routes(addresses: list[str],
 
     console.print('[bold]Resolviendo VRP…[/]')
     idx_routes = solve_vrp(dist, trucks, balance, span, len(stops), dummy)
-    routes = [[addresses[i] for i in route] for route in idx_routes]
+    routes = [[valid_addrs[i - 1] for i in route if i != 0] for route in idx_routes]
     return routes
 
 
