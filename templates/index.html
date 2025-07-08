@@ -68,20 +68,44 @@
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script>
     document.getElementById('opt').onclick = async () => {
-    const raw = document.getElementById('dir').value;
+        const raw = document.getElementById('dir').value;
 
-    // ‼️  divide por CR o LF y quita vacíos
-    const addresses = raw.split(/\r?\n/)
-                        .map(s => s.trim())
-                        .filter(Boolean);
+        // ‼️  divide por CR o LF y quita vacíos
+        const addresses = raw.split(/\r?\n/)
+                            .map(s => s.trim())
+                            .filter(Boolean);
 
-    const trucks = parseInt(document.getElementById('trucks').value, 10);
+        const trucks = parseInt(document.getElementById('trucks').value, 10);
+        const depot = document.getElementById('depot').value;
 
-    const res = await fetch('/optimize', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ addresses, trucks })
-    });
+        const res = await fetch('/optimize', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ addresses, trucks, depot })
+        });
+
+        const data = await res.json();
+        const table = document.getElementById('tbl');
+        table.innerHTML = '';
+        if (res.ok) {
+            data.routes.forEach((route, idx) => {
+                const row = document.createElement('tr');
+                const head = document.createElement('th');
+                head.textContent = `Camión ${idx + 1}`;
+                const cell = document.createElement('td');
+                cell.textContent = route.join(' \u2192 ');
+                row.appendChild(head);
+                row.appendChild(cell);
+                table.appendChild(row);
+            });
+        } else {
+            const row = document.createElement('tr');
+            const cell = document.createElement('td');
+            cell.colSpan = 2;
+            cell.textContent = data.error || 'Error';
+            row.appendChild(cell);
+            table.appendChild(row);
+        }
     };
     </script>
 

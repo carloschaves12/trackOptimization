@@ -15,10 +15,11 @@ def optimize():
     if isinstance(addresses, str):
         addresses = [s.strip() for s in addresses.splitlines() if s.strip()]
     trucks = data.get('trucks')
+    depot = data.get('depot') or 'Corte Inglés Ronda Poniente'
 
     try:
         trucks = int(trucks)
-        routes = compute_routes(addresses, trucks)
+        routes = compute_routes(addresses, trucks, depot=depot)
     except Exception as e:
         return jsonify({'error': str(e)}), 400
 
