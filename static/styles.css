@@ -6,8 +6,8 @@
 }
 
 body {
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     min-height: 100vh;
     padding: 20px;
     color: #333;
@@ -84,6 +84,13 @@ body {
     padding: 0;
     position: relative;
     background: #f0f0f0;
+    max-height: 70vh;     /* 70% del alto de la ventana */
+    overflow-y: auto
+}
+
+h2 {
+    margin-top: 20px;
+    margin-bottom: 20px;
 }
 
 #map {
@@ -369,9 +376,10 @@ textarea {
 }
 
 .loading::before {
-    content: "🔄";
+    content: "↻";
     margin-right: 10px;
     animation: spin 1s linear infinite;
+    font-size: 24px;
 }
 
 @keyframes spin {

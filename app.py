@@ -1,29 +1,29 @@
-# app.py – servidor Flask minimal que sirve la página y llama al motor
-from flask import Flask, request, jsonify, render_template
-from optimization import compute_routes
+from flask import Flask, render_template, request, redirect, url_for, flash
+import optimization
 
-app = Flask(__name__, static_folder='static', template_folder='templates')
+app = Flask(__name__)
+app.secret_key = "cambia_esto_por_un_valor_secreto"
 
-@app.route('/')
+# LISTA en memoria para la demo (reinicia al cerrar la app)
+rutas = []
+
+@app.get("/")
 def index():
-    return render_template('index.html')
+    return render_template("index.html", rutas=rutas)
 
-@app.route('/optimize', methods=['POST'])
-def optimize():
-    data = request.get_json(force=True)
-    addresses = data.get('addresses', [])
-    if isinstance(addresses, str):
-        addresses = [s.strip() for s in addresses.splitlines() if s.strip()]
-    trucks = data.get('trucks')
-    depot = data.get('depot') or 'Corte Inglés Ronda Poniente'
+@app.post("/agregar")
+def agregar():
+    camion = request.form.get("camion", type=int, default=2)
+    direcciones = request.form.get("direcciones", "").strip().splitlines()
+    n = optimization.opt(camion, direcciones)
+    rutas.extend(n)
+    return redirect(url_for("index"))
 
-    try:
-        trucks = int(trucks)
-        routes = compute_routes(addresses, trucks, depot=depot)
-    except Exception as e:
-        return jsonify({'error': str(e)}), 400
+@app.post("/limpiar")
+def limpiar():
+    rutas.clear()                    # vacía la lista
+    flash("Rutas eliminadas", "success")
+    return redirect(url_for("index"))
 
-    return jsonify({'routes': routes})
-
-if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+if __name__ == "__main__":
+    app.run(debug=True)

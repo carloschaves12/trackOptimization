@@ -1,14 +1,23 @@
 #!/usr/bin/env python3
-"""route_optimizer.py (v3.1 – sintaxis corregida)
+"""optimization.py  – versión *solo consola*
 
-* `SyntaxError: '{' was never closed` solucionado (bloque JSON de salida).
-* Rutas abiertas por defecto (`--closed-route` para volver al depósito).
+Uso típico
+~~~~~~~~~~
+    python optimization.py -t 2 -f direcciones.txt --json-out
+
+• Lee todas las direcciones de un fichero de texto (una por línea).
+• Optimiza rutas abiertas (no regresa al depósito) con OR‑Tools.
+• Geocodificación robusta: Nominatim exacto + fuzzy + Photon.
+• Muestra una tabla en consola y puede exportar JSON.
+
+Requisitos
+~~~~~~~~~~
+    pip install ortools geopy requests rapidfuzz rich click
 """
 from __future__ import annotations
 
 import json
 import math
-import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -19,17 +28,16 @@ import requests
 from geopy import Nominatim
 from geopy.extra.rate_limiter import RateLimiter
 from geopy.geocoders import Photon
-from rapidfuzz import fuzz
 from ortools.constraint_solver import pywrapcp, routing_enums_pb2
-from rich import print
+from rapidfuzz import fuzz
 from rich.console import Console
 from rich.table import Table
 
 console = Console()
 
-###############################################################################
-# Dataclass -------------------------------------------------------------------
-###############################################################################
+# ──────────────────────────────────────────────────────────────────────────────
+# Dataclass para almacenar coordenadas
+# ──────────────────────────────────────────────────────────────────────────────
 
 @dataclass
 class Location:
@@ -37,191 +45,141 @@ class Location:
     lat: float
     lon: float
 
-###############################################################################
-# Geocoding utilities ---------------------------------------------------------
-###############################################################################
+# ──────────────────────────────────────────────────────────────────────────────
+# Herramientas de geocodificación
+# ──────────────────────────────────────────────────────────────────────────────
 
 def _normalize(addr: str) -> str:
-    addr = addr.strip().rstrip(", ")
-    # Replace common abbreviations
-    reps = {"av.": "avenida", "c.": "calle", "nº": "", " s/n": ""}
-    for k, v in reps.items():
-        addr = addr.replace(k, v).replace(k.capitalize(), v)
-    if "córdoba" not in addr.lower():
-        addr += ", Córdoba, España"
+    
+    addr = addr.strip().rstrip(', ')
+    if 'córdoba' not in addr.lower():
+        addr += ', Córdoba, España'
     return addr
 
 
-def smart_geocode(addr: str, nomi_rate: RateLimiter, nomi_raw: Nominatim, photon: Photon, timeout: int):
-    query = _normalize(addr)
+def _smart_geocode(addr: str, nomi_rate, nomi_raw, photon, timeout=8):
+    q = _normalize(addr)
+    to_loc = lambda g: Location(q, g.latitude, g.longitude)
 
-    def to_loc(g):
-        return Location(query, g.latitude, g.longitude)
-
-    g = nomi_rate(query, timeout=timeout)
-    if g:
+    if (g := nomi_rate(q, timeout=timeout)):
         return to_loc(g)
 
-    bbox = "-4.85,38.0,-4.60,37.80"  # Córdoba bounding box
     try:
-        cands = nomi_raw.geocode(query, exactly_one=False, limit=5, viewbox=bbox, bounded=True, timeout=timeout)
+        cand = nomi_raw.geocode(q, exactly_one=False, limit=5, timeout=timeout)
     except Exception:
-        cands = None
-    if cands:
-        best = max(cands, key=lambda c: fuzz.token_set_ratio(query.lower(), c.address.lower()))
-        if fuzz.token_set_ratio(query.lower(), best.address.lower()) > 60:
+        cand = None
+    if cand:
+        best = max(cand, key=lambda c: fuzz.token_set_ratio(q.lower(), c.address.lower()))
+        if fuzz.token_set_ratio(q.lower(), best.address.lower()) > 60:
             return to_loc(best)
 
     try:
-        g = photon.geocode(query, timeout=timeout)
+        if (g := photon.geocode(q, timeout=timeout)):
+            return to_loc(g)
     except Exception:
-        g = None
-    if g:
-        return to_loc(g)
+        pass
     return None
 
-###############################################################################
-# Distance matrix -------------------------------------------------------------
-###############################################################################
+# ──────────────────────────────────────────────────────────────────────────────
+# Construir matriz de distancias con OSRM público
+# ──────────────────────────────────────────────────────────────────────────────
 
-def build_distance_matrix(locs: Sequence[Location], osrm_url: str, open_route: bool):
-    coords = ";".join(f"{l.lon},{l.lat}" for l in locs)
-    r = requests.get(f"{osrm_url.rstrip('/')}/table/v1/driving/{coords}?annotations=distance", timeout=60)
-    base = [[int(c) if c is not None else 10**9 for c in row] for row in r.json().get("distances", [])]
+def _build_matrix(locs: Sequence[Location]):
+    coords = ';'.join(f'{l.lon},{l.lat}' for l in locs)
+    url = f'https://router.project-osrm.org/table/v1/driving/{coords}?annotations=distance'
+    r = requests.get(url, timeout=60)
+    base = [[int(c) if c is not None else 10**9 for c in row] for row in r.json()['distances']]
 
-    if not open_route:
-        return base, None
-
+    # nodo dummy para rutas abiertas
     n = len(base)
     for row in base:
         row.append(0)
     base.append([0] * (n + 1))
-    return base, n  # dummy index = n
+    return base, n
 
-###############################################################################
-# VRP solver ------------------------------------------------------------------
-###############################################################################
+# ──────────────────────────────────────────────────────────────────────────────
+# Solucionador VRP con OR‑Tools
+# ──────────────────────────────────────────────────────────────────────────────
 
-def solve_vrp(dist, k: int, balance: bool, span: bool, n_stops: int, dummy: int | None):
-    if dummy is None:
-        man = pywrapcp.RoutingIndexManager(len(dist), k, 0)
-    else:
-        man = pywrapcp.RoutingIndexManager(len(dist), k, [0] * k, [dummy] * k)
+def _solve_vrp(dist, k: int, dummy: int):
+    man = pywrapcp.RoutingIndexManager(len(dist), k, [0]*k, [dummy]*k)
     model = pywrapcp.RoutingModel(man)
 
-    transit = model.RegisterTransitCallback(lambda i, j: dist[man.IndexToNode(i)][man.IndexToNode(j)])
+    transit = model.RegisterTransitCallback(lambda i,j: dist[man.IndexToNode(i)][man.IndexToNode(j)])
     model.SetArcCostEvaluatorOfAllVehicles(transit)
 
-    if balance:
-        demand = model.RegisterUnaryTransitCallback(lambda idx: 0 if man.IndexToNode(idx) in (0, dummy) else 1)
-        model.AddDimensionWithVehicleCapacity(demand, 0, [math.ceil(n_stops / k)] * k, True, "Load")
-
-    if span:
-        model.AddDimension(transit, 0, 10**9, True, "Span")
-        model.GetDimensionOrDie("Span").SetGlobalSpanCostCoefficient(100)
-
+    demand = model.RegisterUnaryTransitCallback(
+        lambda idx: 0 if man.IndexToNode(idx) in (0, dummy) else 1)
+    max_load = math.ceil((len(dist) - 2) / k)     # -2: depósito + dummy
+    model.AddDimensionWithVehicleCapacity(
+        demand, 0, [max_load]*k, True, 'Load')
+    
     params = pywrapcp.DefaultRoutingSearchParameters()
     params.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
-    params.local_search_metaheuristic = routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
-    params.time_limit.seconds = 15
-
+    params.time_limit.seconds = 10
     sol = model.SolveWithParameters(params)
     if not sol:
-        console.print("[red]Sin solución VRP.")
-        sys.exit(1)
+        raise RuntimeError('No se pudo hallar solución')
 
     routes = []
     for v in range(k):
         idx = model.Start(v)
-        route = []
+        seq = []
         while not model.IsEnd(idx):
             node = man.IndexToNode(idx)
-            if node != dummy:
-                route.append(node)
+            if node not in (0, dummy):
+                seq.append(node)
             idx = sol.Value(model.NextVar(idx))
-        routes.append(route)
+        routes.append(seq)
     return routes
 
-###############################################################################
-# CLI -------------------------------------------------------------------------
-###############################################################################
+# ──────────────────────────────────────────────────────────────────────────────
+# Función principal de línea de comandos
+# ──────────────────────────────────────────────────────────────────────────────
 
-@click.command()
-@click.option('--trucks', '-t', type=int, required=True)
-@click.option('--address', '-a', multiple=True)
-@click.option('--file', '-f', type=click.Path(exists=True))
-@click.option('--depot', default='Corte Inglés Ronda Poniente')
-@click.option('--osrm-url', default='https://router.project-osrm.org')
-@click.option('--timeout', default=8)
-@click.option('--balance', is_flag=True)
-@click.option('--span', is_flag=True)
-@click.option('--open-route/--closed-route', default=True)
-@click.option('--no-interactive', is_flag=True)
-@click.option('--json-out', is_flag=True)
+#@click.command()
+#@click.option('-t', '--trucks', default=2, type=int, required=True, help='Número de camiones')
+#@click.option('-f', '--file', 'file_', default='direcciones.txt', type=click.Path(exists=True), required=True, help='Fichero .txt con direcciones')
+#@click.option('--json-out', is_flag=True, help='Exportar rutas a JSON')
 
-def cli(trucks, address, file, depot, osrm_url, timeout, balance, span, open_route, no_interactive, json_out):
-    # gather addresses
-    addrs = list(address)
-    if file:
-        addrs.extend(Path(file).read_text(encoding='utf-8').splitlines())
-    addrs = [a.strip() for a in addrs if a.strip() and not a.strip().startswith('#')]
-    if not addrs:
-        console.print('[red]Sin direcciones.'); sys.exit(1)
+def opt(trucks, direcciones):
 
-    routes = compute_routes(addrs, trucks,
-                        depot=depot,
-                        osrm_url=osrm_url,
-                        timeout=timeout,
-                        balance=balance,
-                        span=span,
-                        open_route=open_route,
-                        interactive=not no_interactive)
-    
-    return routes
-
-
-# —— NUEVA FUNCIÓN REUTILIZABLE ——————————————————————
-def compute_routes(addresses: list[str],
-                   trucks: int,
-                   depot: str = 'Corte Inglés Ronda Poniente',
-                   osrm_url: str = 'https://router.project-osrm.org',
-                   timeout: int = 8,
-                   balance: bool = True,
-                   span: bool = True,
-                   open_route: bool = True,
-                   interactive: bool = False,
-                   json_out: bool = True):
-
-    # geocoders
+    #addresses = [l.strip() for l in Path(file_).read_text(encoding='utf-8').splitlines() if l.strip()]
+    addresses = direcciones
     nomi_raw = Nominatim(user_agent='route_opt_cli')
-    nomi_rate = RateLimiter(nomi_raw.geocode, min_delay_seconds=1, max_retries=2, error_wait_seconds=2)
+    nomi_rate = RateLimiter(nomi_raw.geocode, min_delay_seconds=1, max_retries=2)
     photon = Photon(user_agent='route_opt_cli')
 
-    def resolve(a):
-        loc = smart_geocode(a, nomi_rate, nomi_raw, photon, timeout)
-        while loc is None and not interactive:
-            console.print(f'[yellow]No encontrada:[/] {a}')
-            new = console.input('📝 Corrige o Enter para omitir > ').strip()
-            if not new:
-                return None
-            loc = smart_geocode(new, nomi_rate, nomi_raw, photon, timeout)
-        return loc
+    depot = 'Corte Inglés Ronda Poniente, Córdoba, España'
+    depot_loc = _smart_geocode(depot, nomi_rate, nomi_raw, photon)
+    if depot_loc is None:
+        console.print('[red]Depósito no geocodificado'); return
 
-    console.print(f'[bold]Geocodificando {len(addresses) + 1} direcciones…[/]')
-    depot_loc = resolve(depot)
-    stops = [loc for addr in addresses if (loc := resolve(addr))]
-    if not depot_loc or not stops:
-        console.print('[red]Geocodificación insuficiente.'); sys.exit(1)
+    locs = [depot_loc]
+    unresolved = []
+    for a in addresses:
+        loc = _smart_geocode(a, nomi_rate, nomi_raw, photon)
+        if loc:
+            locs.append(loc)
+        else:
+            unresolved.append(a)
 
-    locs = [depot_loc] + stops
-    console.print('[bold]Construyendo matriz de distancias…[/]')
-    dist, dummy = build_distance_matrix(locs, osrm_url, open_route)
+    if not locs[1:]:
+        console.print('[red]Ninguna dirección válida'); return
 
-    console.print('[bold]Resolviendo VRP…[/]')
-    idx_routes = solve_vrp(dist, trucks, balance, span, len(stops), dummy)
-    routes = [[addresses[i] for i in route] for route in idx_routes]
+    dist, dummy = _build_matrix(locs)
+    idx_routes = _solve_vrp(dist, trucks, dummy)
+    routes = [[locs[0].address] + [locs[i].address for i in seq] for seq in idx_routes]
+    # Tabla
+    tbl = Table(show_header=True, header_style='bold cyan')
+    tbl.add_column('Camión'); tbl.add_column('Ruta')
+    for i, r in enumerate(routes, 1):
+        tbl.add_row(str(i), ' ➜ '.join(r))
+    #console.print(tbl)
+
+    if unresolved:
+        console.print(f'[yellow]Sin geocodificar ({len(unresolved)}):[/]\n- ' + '\n- '.join(unresolved))
+
     return routes
-
-
 if __name__ == '__main__':
-    cli()
+    opt(2, 'direcciones.txt')

@@ -1,113 +1,61 @@
-<!DOCTYPE html>
-<html lang="es">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Optimizador de Rutas de Reparto</title>
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <link rel="stylesheet" href="../static/styles.css">
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>🚛 Optimizador de Rutas</h1>
-            <p>Sistema inteligente para optimizar rutas de reparto en Córdoba</p>
+{% extends "base.html" %}
+
+{% block title %}Optimizador de Rutas{% endblock %}
+
+{% block content %}
+  <aside class="sidebar">
+
+    {# Flash messages #}
+    {% with msgs = get_flashed_messages(with_categories=true) %}
+      {% if msgs %}
+        <div class="results">
+          <ul>
+            {% for cat, msg in msgs %}
+              <li class="{{ cat }}-state">{{ msg }}</li>
+            {% endfor %}
+          </ul>
         </div>
-        
-        <div class="main-content">
-            <div class="sidebar">
-                <div class="input-section">
-                    <h3>📍 Configuración</h3>
-                    <div class="input-group">
-                        <label for="numTrucks">Número de Camiones:</label>
-                        <input type="number" id="trucks" value="2" min="1" max="10">
-                    </div>
-                    <div class="input-group">
-                        <label for="depot">Dirección del Almacén:</label>
-                        <input type="text" id="depot" value="Córdoba, España" placeholder="Dirección del punto de partida">
-                    </div>
-                </div>
-                
-                <div class="input-section">
-                    <h3>📝 Direcciones de Entrega</h3>
-                    <div class="input-group">
-                        <label for="addresses">Direcciones (una por línea):</label>
-                        <textarea id="dir" placeholder="Introduce aqui las direcciones"></textarea>
-                    </div>
-                    <button class="btn btn-success" id="opt">⚡ Optimizar Rutas</button>
-                </div>
-                
-                <div id="results"></div>
-            </div>
-            
-            <div class="map-container">
-                <div id="map"></div>
-                <div class="legend">
-                    <div class="legend-item">
-                        <div class="legend-color" style="background: #e74c3c;"></div>
-                        <span>Almacén</span>
-                    </div>
-                    <div class="legend-item">
-                        <div class="legend-color" style="background: #3498db;"></div>
-                        <span>Ruta 1</span>
-                    </div>
-                    <div class="legend-item">
-                        <div class="legend-color" style="background: #27ae60;"></div>
-                        <span>Ruta 2</span>
-                    </div>
-                    <div class="legend-item">
-                        <div class="legend-color" style="background: #f39c12;"></div>
-                        <span>Ruta 3</span>
-                    </div>
-                </div>
-            </div>
+      {% endif %}
+    {% endwith %}
+
+    <section class="input-section">
+      <h3>Generar rutas</h3>
+
+      <form action="{{ url_for('agregar') }}" method="post">
+        <div class="input-group">
+          <label for="camion">Número de camiones</label>
+          <input name="camion" type="number" required value="2">
         </div>
-    </div>
-<table id="tbl" class="routes"></table>
 
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script>
-    document.getElementById('opt').onclick = async () => {
-        const raw = document.getElementById('dir').value;
+        <div class="input-group">
+          <label for="direcciones">Direcciones (una por línea)</label>
+          <textarea name="direcciones" required></textarea>
+        </div>
 
-        // ‼️  divide por CR o LF y quita vacíos
-        const addresses = raw.split(/\r?\n/)
-                            .map(s => s.trim())
-                            .filter(Boolean);
+        <button class="btn btn-success" type="submit">Calcular</button>
+      </form>
 
-        const trucks = parseInt(document.getElementById('trucks').value, 10);
-        const depot = document.getElementById('depot').value;
+      <form action="{{ url_for('limpiar') }}" method="post">
+        <button class="btn btn-warning" type="submit">Limpiar rutas</button>
+      </form>
+    </section>
 
-        const res = await fetch('/optimize', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ addresses, trucks, depot })
-        });
+  </aside>
 
-        const data = await res.json();
-        const table = document.getElementById('tbl');
-        table.innerHTML = '';
-        if (res.ok) {
-            data.routes.forEach((route, idx) => {
-                const row = document.createElement('tr');
-                const head = document.createElement('th');
-                head.textContent = `Camión ${idx + 1}`;
-                const cell = document.createElement('td');
-                cell.textContent = route.join(' \u2192 ');
-                row.appendChild(head);
-                row.appendChild(cell);
-                table.appendChild(row);
-            });
-        } else {
-            const row = document.createElement('tr');
-            const cell = document.createElement('td');
-            cell.colSpan = 2;
-            cell.textContent = data.error || 'Error';
-            row.appendChild(cell);
-            table.appendChild(row);
-        }
-    };
-    </script>
+  <section class="map-container">
+    <h2>Rutas</h2>
 
-</body>
-</html>
+    {% for ruta in rutas %}
+      <div class="route-info">
+        <h4>Ruta {{ loop.index }}</h4>
+        <ol>
+          {% for parada in ruta %}
+            <li>{{ parada }}</li>
+          {% endfor %}
+        </ol>
+      </div>
+    {% else %}
+      <p class="loading">No hay rutas para mostrar</p>
+    {% endfor %}
+  </section>
+{% endblock %}
