@@ -1,0 +1,9 @@
+Flask>=3.0,<4.0
+gunicorn>=22.0
+
+ortools
+geopy
+requests
+rapidfuzz
+rich
+click
